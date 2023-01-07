@@ -42,6 +42,9 @@ Module `x86` contains code specifically for `x86` or `x86_64` optimizations.
 
 ## Performance
 My system:
+
+| | |
+|---|---|
 | CPU | AMD Ryzen 9 5900X |
 | RAM | 64GB DDR4 3200MHz |
 | OS | Windows 10 22H2 |
