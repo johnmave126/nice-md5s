@@ -1,0 +1,36 @@
+[package]
+name = "nice-md5s"
+version = "0.1.0"
+authors = ["Shuhao Tan <johnmave126@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "A terminal app to find nice MD5s"
+readme = "README.md"
+edition = "2021"
+
+[[bench]]
+name = "niceties"
+harness = false
+
+[[bench]]
+name = "md5"
+harness = false
+
+[[bench]]
+name = "integrated"
+harness = false
+
+[profile.release]
+lto = true
+
+[profile.bench]
+lto = true
+
+[dependencies]
+clap = { version = "4.0.32", features = ["derive"] }
+indicatif = "0.17.2"
+md-5 = "0.10.5"
+rand = { version = "0.8.5", features = ["small_rng", "min_const_gen"] }
+
+[dev-dependencies]
+criterion = { version = "0.4.0", features = ["html_reports"] }
+hex = "0.4.3"
