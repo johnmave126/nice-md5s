@@ -1,7 +1,10 @@
-use std::{is_x86_feature_detected, mem::transmute};
+use std::{
+    is_x86_feature_detected,
+    mem::{transmute, MaybeUninit},
+};
 
 use super::use_intrinsic;
-use crate::{baseline::Baseline, NibblesBatch, Nicety};
+use crate::{x86::Simd, Nibbles, NibblesBatch, Nicety};
 
 use_intrinsic! {__m256i}
 
@@ -18,7 +21,7 @@ use_intrinsic! {__m256i}
 /// has nicety greater than 4, and use [`crate::baseline`] algorithm to test
 /// those.
 #[derive(Debug, Clone, Copy)]
-pub struct SimdLossy8(__m256i, [Baseline; 8]);
+pub struct SimdLossy8(__m256i, [[u8; 16]; 8]);
 
 impl SimdLossy8 {
     /// Mathematical constant `e` in nibbles form for 4 nibbles.
@@ -76,15 +79,35 @@ impl SimdLossy8 {
     /// Construct a new array of first 4 nibbles.
     unsafe fn new(x: [[u8; 16]; 8]) -> Self {
         let first_2_bytes = x.map(|v| [v[0], v[1]]);
-        Self(
-            super::Simd::new(transmute(first_2_bytes)).0,
-            x.map(Into::into),
-        )
+        Self(Simd::new(transmute(first_2_bytes)).0, x)
+    }
+
+    /// Load original inputs as SIMD vector according to the mask
+    unsafe fn load_by_mask(&self, mask: u8) -> [MaybeUninit<Simd>; 8] {
+        // SAFETY: MaybeUninit is always initialized
+        let mut simds: [MaybeUninit<Simd>; 8] = MaybeUninit::uninit().assume_init();
+
+        Self::foreach_mask(mask, |idx| {
+            // SAFETY: 0 <= idx < 8
+            simds
+                .get_unchecked_mut(idx)
+                .write(Simd::new(self.1.get_unchecked(idx).clone()));
+        });
+
+        simds
     }
 
     /// Returns number of consecutive leading digits/letters for each input.
-    #[target_feature(enable = "avx,avx2")]
     unsafe fn count_leading_digits_and_letters(&self) -> [(u8, u8); 8] {
+        let (digits, letters) = self.count_leading_digits_and_letters_mask();
+        let loaded = self.load_by_mask(digits | letters);
+        Self::count_leading_digits_and_letters_with_potential((digits, letters), &loaded)
+    }
+
+    /// Returns whether consecutive leading digits/letters are at least 4 for
+    /// each input, in bit mask form.
+    #[target_feature(enable = "avx,avx2")]
+    unsafe fn count_leading_digits_and_letters_mask(&self) -> (u8, u8) {
         debug_assert!(is_x86_feature_detected!("avx") && is_x86_feature_detected!("avx2"));
 
         use_intrinsic! {
@@ -94,20 +117,36 @@ impl SimdLossy8 {
         let epi8_mask = _mm256_cmpgt_epi8(self.0, _mm256_set1_epi8(0x09u8 as i8));
 
         let digits =
-            Self::gather_all_one_dword(_mm256_cmpeq_epi32(epi8_mask, _mm256_setzero_si256()));
-        let letters = Self::gather_all_one_dword(_mm256_cmpeq_epi32(
+            Self::gather_all_one_dword_mask(_mm256_cmpeq_epi32(epi8_mask, _mm256_setzero_si256()));
+        let letters = Self::gather_all_one_dword_mask(_mm256_cmpeq_epi32(
             epi8_mask,
             _mm256_set1_epi8(0xFFu8 as i8),
         ));
 
+        (digits, letters)
+    }
+
+    /// Returns number of consecutive leading digits/letters for each input.
+    ///
+    /// # Safety
+    /// The caller needs to make sure that `simd` is initialized at indices
+    /// indicated by `digits` or `letters`
+    unsafe fn count_leading_digits_and_letters_with_potential(
+        (digits, letters): (u8, u8),
+        simd: &[MaybeUninit<Simd>; 8],
+    ) -> [(u8, u8); 8] {
         let mut r = [(0, 0); 8];
 
-        self.foreach_indexed(digits, |idx, v| {
-            r.get_unchecked_mut(idx).0 = v.count_leading_digits_skipping::<4>()
+        Self::foreach_mask(digits, |idx| {
+            r.get_unchecked_mut(idx).0 =
+                simd.get_unchecked(idx).assume_init().count_leading_digits()
         });
 
-        self.foreach_indexed(letters, |idx, v| {
-            r.get_unchecked_mut(idx).1 = v.count_leading_letters_skipping::<4>()
+        Self::foreach_mask(letters, |idx| {
+            r.get_unchecked_mut(idx).1 = simd
+                .get_unchecked(idx)
+                .assume_init()
+                .count_leading_letters()
         });
 
         r
@@ -115,8 +154,16 @@ impl SimdLossy8 {
 
     /// Returns number of consecutive same nibbles from the start for each
     /// input.
+    unsafe fn count_leading_homogeneous_simd(&self) -> [u8; 8] {
+        let homogeneous = self.count_leading_homogeneous_mask();
+        let loaded = self.load_by_mask(homogeneous);
+        Self::count_leading_homogeneous_with_potential(homogeneous, &loaded)
+    }
+
+    /// Returns whether consecutive same nibbles from the start are at least 4
+    /// for each input, in bit mask form.
     #[target_feature(enable = "avx,avx2")]
-    unsafe fn count_leading_homogenous_simd(&self) -> [u8; 8] {
+    unsafe fn count_leading_homogeneous_mask(&self) -> u8 {
         debug_assert!(is_x86_feature_detected!("avx") && is_x86_feature_detected!("avx2"));
 
         use_intrinsic! {_mm256_cmpeq_epi32, _mm256_loadu_si256, _mm256_shuffle_epi8}
@@ -127,42 +174,79 @@ impl SimdLossy8 {
             0, 0, 0, 0, 4, 4, 4, 4, 8, 8, 8, 8, 12, 12, 12, 12, // hi-16 bytes
         ];
 
-        let homogenous = Self::gather_all_one_dword(_mm256_cmpeq_epi32(
+        Self::gather_all_one_dword_mask(_mm256_cmpeq_epi32(
             _mm256_shuffle_epi8(self.0, _mm256_loadu_si256(SHUFFLE_MASK.as_ptr().cast())),
             self.0,
-        ));
+        ))
+    }
 
-        self.delegate_by_indices(homogenous, Baseline::count_leading_homogenous_skipping::<4>)
+    /// Returns number of consecutive same nibbles from the start for each
+    /// input.
+    ///
+    /// # Safety
+    /// The caller needs to make sure that `simd` is initialized at indices
+    /// indicated by `homogeneous`
+    fn count_leading_homogeneous_with_potential(
+        homogeneous: u8,
+        simds: &[MaybeUninit<Simd>; 8],
+    ) -> [u8; 8] {
+        Self::delegate_by_mask(homogeneous, simds, Simd::count_leading_homogeneous)
     }
 
     /// Returns number of consecutive nibbles equal to mathematical constant `e`
     /// from the start for each input.
-    #[target_feature(enable = "avx,avx2")]
     unsafe fn count_longest_prefix_e_simd(&self) -> [u8; 8] {
-        debug_assert!(is_x86_feature_detected!("avx") && is_x86_feature_detected!("avx2"));
+        let leading_e = self.count_longest_prefix_single_mask(Self::MATH_E);
+        let loaded = self.load_by_mask(leading_e);
+        Self::count_longest_prefix_e_with_potential(leading_e, &loaded)
+    }
 
-        use_intrinsic! {_mm256_cmpeq_epi32, _mm256_set1_epi32}
-
-        let e = _mm256_set1_epi32(Self::MATH_E);
-
-        let leading_e = Self::gather_all_one_dword(_mm256_cmpeq_epi32(self.0, e));
-
-        self.delegate_by_indices(leading_e, Baseline::count_longest_prefix_e_skipping::<4>)
+    /// Returns number of consecutive nibbles equal to mathematical constant `e`
+    /// for each input.
+    ///
+    /// # Safety
+    /// The caller needs to make sure that `simd` is initialized at indices
+    /// indicated by `leading_e`
+    fn count_longest_prefix_e_with_potential(
+        leading_e: u8,
+        simds: &[MaybeUninit<Simd>; 8],
+    ) -> [u8; 8] {
+        Self::delegate_by_mask(leading_e, simds, Simd::count_longest_prefix_e)
     }
 
     /// Returns number of consecutive nibbles equal to mathematical constant `π`
     /// from the start for each input.
     #[target_feature(enable = "avx,avx2")]
     unsafe fn count_longest_prefix_pi_simd(&self) -> [u8; 8] {
+        let leading_pi = self.count_longest_prefix_single_mask(Self::MATH_PI);
+        let loaded = self.load_by_mask(leading_pi);
+        Self::count_longest_prefix_pi_with_potential(leading_pi, &loaded)
+    }
+
+    /// Returns number of consecutive nibbles equal to mathematical constant `π`
+    /// for each input.
+    ///
+    /// # Safety
+    /// The caller needs to make sure that `simd` is initialized at indices
+    /// indicated by `leading_pi`
+    fn count_longest_prefix_pi_with_potential(
+        leading_pi: u8,
+        simds: &[MaybeUninit<Simd>; 8],
+    ) -> [u8; 8] {
+        Self::delegate_by_mask(leading_pi, simds, Simd::count_longest_prefix_pi)
+    }
+
+    /// Returns whether consecutive nibbles equal to `prefix` from the start are
+    /// at least 4 for each input, in bit mask form.
+    #[target_feature(enable = "avx,avx2")]
+    unsafe fn count_longest_prefix_single_mask(&self, prefix: i32) -> u8 {
         debug_assert!(is_x86_feature_detected!("avx") && is_x86_feature_detected!("avx2"));
 
         use_intrinsic! {_mm256_cmpeq_epi32, _mm256_set1_epi32}
 
-        let pi = _mm256_set1_epi32(Self::MATH_PI);
+        let prefix = _mm256_set1_epi32(prefix);
 
-        let leading_pi = Self::gather_all_one_dword(_mm256_cmpeq_epi32(self.0, pi));
-
-        self.delegate_by_indices(leading_pi, Baseline::count_longest_prefix_pi_skipping::<4>)
+        Self::gather_all_one_dword_mask(_mm256_cmpeq_epi32(self.0, prefix))
     }
 
     /// Returns number of consecutive nibbles equal to `other` from the start
@@ -173,53 +257,59 @@ impl SimdLossy8 {
 
         use_intrinsic! {_mm256_cmpeq_epi32}
 
-        let prefix = Self::gather_all_one_dword(_mm256_cmpeq_epi32(self.0, other.0));
+        let prefix = Self::gather_all_one_dword_mask(_mm256_cmpeq_epi32(self.0, other.0));
+
+        let loaded_self = self.load_by_mask(prefix);
+        let loaded_other = other.load_by_mask(prefix);
 
         let mut r = [0; 8];
-        self.foreach_indexed(prefix, |idx, v| {
-            *r.get_unchecked_mut(idx) =
-                v.count_longest_prefix_skipping::<4>(other.1.get_unchecked(idx));
+        Self::foreach_mask(prefix, |idx| {
+            *r.get_unchecked_mut(idx) = loaded_self
+                .get_unchecked(idx)
+                .assume_init_ref()
+                .count_longest_prefix(loaded_other.get_unchecked(idx).assume_init_ref())
         });
         r
     }
 
-    /// Returns indices of 32-bit integers in a SIMD vector such that the
+    /// Returns packed mask of 32-bit integers in a SIMD vector such that the
     /// highest bit is 1.
     #[target_feature(enable = "avx")]
-    unsafe fn gather_all_one_dword(x: __m256i) -> u32 {
+    unsafe fn gather_all_one_dword_mask(x: __m256i) -> u8 {
         debug_assert!(is_x86_feature_detected!("avx"));
 
         use_intrinsic! {_mm256_cvtepi32_ps, _mm256_movemask_ps}
 
-        let epi32_mask = _mm256_movemask_ps(_mm256_cvtepi32_ps(x)) as u32 as usize;
-        *Self::LUT_ALL_ONE.get_unchecked(epi32_mask)
+        _mm256_movemask_ps(_mm256_cvtepi32_ps(x)) as u8
     }
 
     /// Given a compressed indices vector returned by
-    /// [`Self::gather_all_one_dword`], call `f` for each indexed input.
+    /// [`Self::gather_all_one_dword_mask`], call `f` for the indices of 1's.
     #[inline(always)]
-    fn foreach_indexed<F>(&self, mut indices: u32, mut f: F)
+    fn foreach_mask<F>(mask: u8, mut f: F)
     where
-        F: FnMut(usize, &Baseline),
+        F: FnMut(usize),
     {
+        // SAFETY: 0<=x < 256, Self::LUT_ALL_ONE.len() == 256
+        let mut indices = unsafe { *Self::LUT_ALL_ONE.get_unchecked(mask as usize) };
         while indices != 0 {
             let idx = (indices & 0xF) as usize - 1;
-            f(idx, unsafe { self.1.get_unchecked(idx) });
+            f(idx);
             indices >>= 4;
         }
     }
 
     /// Given a compressed indices vector returned by
-    /// [`Self::gather_all_one_dword`], use `f` as the value for those
+    /// [`Self::gather_all_one_dword_mask`], use `f` as the value for those
     /// positions, and leave 0 otherwise.
     #[inline(always)]
-    fn delegate_by_indices<F>(&self, indices: u32, f: F) -> [u8; 8]
+    fn delegate_by_mask<F>(mask: u8, simds: &[MaybeUninit<Simd>; 8], f: F) -> [u8; 8]
     where
-        F: Fn(&Baseline) -> u8,
+        F: Fn(&Simd) -> u8,
     {
         let mut r = [0; 8];
-        self.foreach_indexed(indices, |idx, v| {
-            unsafe { *r.get_unchecked_mut(idx) = f(v) };
+        Self::foreach_mask(mask, |idx| {
+            unsafe { *r.get_unchecked_mut(idx) = f(simds.get_unchecked(idx).assume_init_ref()) };
         });
         r
     }
@@ -243,7 +333,7 @@ impl NibblesBatch<8> for SimdLossy8 {
     }
 
     fn count_leading_homogeneous_batch(x: [[u8; 16]; 8]) -> [u8; 8] {
-        unsafe { Self::from(x).count_leading_homogenous_simd() }
+        unsafe { Self::from(x).count_leading_homogeneous_simd() }
     }
 
     fn count_longest_prefix_e_batch(x: [[u8; 16]; 8]) -> [u8; 8] {
@@ -263,16 +353,24 @@ impl NibblesBatch<8> for SimdLossy8 {
 
         let mut r = [Nicety::default(); 8];
         unsafe {
-            let digits_and_letters = x.count_leading_digits_and_letters();
-            let homogenous = x.count_leading_homogenous_simd();
-            let leading_e = x.count_longest_prefix_e_simd();
-            let leading_pi = x.count_longest_prefix_pi_simd();
+            let (digits, letters) = x.count_leading_digits_and_letters_mask();
+            let homogeneous = x.count_leading_homogeneous_mask();
+            let leading_e = x.count_longest_prefix_single_mask(Self::MATH_E);
+            let leading_pi = x.count_longest_prefix_single_mask(Self::MATH_PI);
+
+            let loaded = x.load_by_mask(digits | letters | homogeneous | leading_e | leading_pi);
+
+            let digits_and_letters =
+                Self::count_leading_digits_and_letters_with_potential((digits, letters), &loaded);
+            let homogeneous = Self::count_leading_homogeneous_with_potential(homogeneous, &loaded);
+            let leading_e = Self::count_longest_prefix_e_with_potential(leading_e, &loaded);
+            let leading_pi = Self::count_longest_prefix_pi_with_potential(leading_pi, &loaded);
 
             for i in 0..8 {
                 r[i] = Nicety {
                     digits: digits_and_letters[i].0,
                     letters: digits_and_letters[i].1,
-                    homogenous: homogenous[i],
+                    homogeneous: homogeneous[i],
                     leading_e: leading_e[i],
                     leading_pi: leading_pi[i],
                 }

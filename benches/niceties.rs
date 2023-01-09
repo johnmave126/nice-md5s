@@ -81,9 +81,9 @@ macro_rules! bench_batch {
                 && is_x86_feature_detected!("sse2")
             {
                 bench_function::<$N, _, _, _>(&mut $group, "SIMD", Simd::$fn);
-            }
-            if $N == 8 && is_x86_feature_detected!("avx") && is_x86_feature_detected!("avx2") {
-                bench_function::<8, _, _, _>(&mut $group, "SIMD Lossy", SimdLossy8::$fn);
+                if $N == 8 {
+                    bench_function::<8, _, _, _>(&mut $group, "SIMD Lossy", SimdLossy8::$fn);
+                }
             }
         }
     };
