@@ -85,7 +85,7 @@ impl Simd {
 
     /// Returns number of consecutive same nibbles from the start.
     #[target_feature(enable = "avx,avx2")]
-    unsafe fn count_leading_homogenous_simd(&self) -> u8 {
+    unsafe fn count_leading_homogeneous_simd(&self) -> u8 {
         debug_assert!(is_x86_feature_detected!("avx") && is_x86_feature_detected!("avx2"));
 
         use_intrinsic! {
@@ -183,8 +183,8 @@ impl Nibbles for Simd {
         unsafe { self.count_leading_digits_and_letters().1 }
     }
 
-    fn count_leading_homogenous(&self) -> u8 {
-        unsafe { self.count_leading_homogenous_simd() }
+    fn count_leading_homogeneous(&self) -> u8 {
+        unsafe { self.count_leading_homogeneous_simd() }
     }
 
     fn count_longest_prefix_e(&self) -> u8 {
@@ -201,13 +201,13 @@ impl Nibbles for Simd {
 
     fn compute_nicety(&self) -> Nicety {
         let (digits, letters) = unsafe { self.count_leading_digits_and_letters() };
-        let homogenous = self.count_leading_homogenous();
+        let homogeneous = self.count_leading_homogeneous();
         let leading_e = self.count_longest_prefix_e();
         let leading_pi = self.count_longest_prefix_pi();
         Nicety {
             digits,
             letters,
-            homogenous,
+            homogeneous,
             leading_e,
             leading_pi,
         }

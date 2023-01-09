@@ -108,7 +108,7 @@ macro_rules! make_bench {
 make_bench!(compute_nicety_batch, "Compute Nicety");
 make_bench!(count_leading_digits_batch, "Count Leading Digits");
 make_bench!(count_leading_letters_batch, "Count Leading Letters");
-make_bench!(count_leading_homogenous_batch, "Count Homogenous Prefix");
+make_bench!(count_leading_homogeneous_batch, "Count Homogenous Prefix");
 make_bench!(count_longest_prefix_e_batch, "Count `e` prefix");
 make_bench!(count_longest_prefix_pi_batch, "Count `π` prefix");
 make_bench!(count_longest_prefix_batch, "Count Common prefix");
@@ -122,7 +122,7 @@ criterion_group!(
     targets = compute_nicety_batch,
               count_leading_digits_batch,
               count_leading_letters_batch,
-              count_leading_homogenous_batch,
+              count_leading_homogeneous_batch,
               count_longest_prefix_e_batch,
               count_longest_prefix_pi_batch,
               count_longest_prefix_batch

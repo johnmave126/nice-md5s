@@ -10,7 +10,7 @@ pub struct Nicety {
     /// Number of consecutive leading letters (a-f)
     pub letters: u8,
     /// Number of consecutive leading nibbles equal to the first nibble
-    pub homogenous: u8,
+    pub homogeneous: u8,
     /// Number of consecutive leading nibbles matching `e`
     pub leading_e: u8,
     /// Number of consecutive leading nibbles matching `π`
@@ -61,9 +61,9 @@ pub trait Nibbles {
     ///     0x00, 0x11, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
     /// ]
     /// .into();
-    /// assert_eq!(nibbles.count_leading_homogenous(), 7);
+    /// assert_eq!(nibbles.count_leading_homogeneous(), 7);
     /// ```
-    fn count_leading_homogenous(&self) -> u8;
+    fn count_leading_homogeneous(&self) -> u8;
 
     /// Count the length of the longest common prefix between `self` and the
     /// [mathematical constant `e`](https://en.wikipedia.org/wiki/E_(mathematical_constant)).
@@ -119,13 +119,13 @@ pub trait Nibbles {
     fn compute_nicety(&self) -> Nicety {
         let digits = self.count_leading_digits();
         let letters = self.count_leading_letters();
-        let homogenous = self.count_leading_homogenous();
+        let homogeneous = self.count_leading_homogeneous();
         let leading_e = self.count_longest_prefix_e();
         let leading_pi = self.count_longest_prefix_pi();
         Nicety {
             digits,
             letters,
-            homogenous,
+            homogeneous,
             leading_e,
             leading_pi,
         }
@@ -144,7 +144,7 @@ pub trait NibblesBatch<const N: usize> {
 
     /// Count the number of consecutive nibbles equal to the first nibble from
     /// the start in batch.
-    fn count_leading_homogenous_batch(x: [[u8; 16]; N]) -> [u8; N];
+    fn count_leading_homogeneous_batch(x: [[u8; 16]; N]) -> [u8; N];
 
     /// Count the length of the longest common prefix between `x` and the
     /// [mathematical constant `e`](https://en.wikipedia.org/wiki/E_(mathematical_constant)) in batch.
@@ -176,8 +176,8 @@ where
         x.map(|v| T::from(v).count_leading_letters())
     }
 
-    fn count_leading_homogenous_batch(x: [[u8; 16]; N]) -> [u8; N] {
-        x.map(|v| T::from(v).count_leading_homogenous())
+    fn count_leading_homogeneous_batch(x: [[u8; 16]; N]) -> [u8; N] {
+        x.map(|v| T::from(v).count_leading_homogeneous())
     }
 
     fn count_longest_prefix_e_batch(x: [[u8; 16]; N]) -> [u8; N] {
@@ -250,8 +250,8 @@ mod tests {
             self.test_single(T::count_leading_letters_batch)
         }
 
-        fn count_leading_homogenous(&self) -> u8 {
-            self.test_single(T::count_leading_homogenous_batch)
+        fn count_leading_homogeneous(&self) -> u8 {
+            self.test_single(T::count_leading_homogeneous_batch)
         }
 
         fn count_longest_prefix_e(&self) -> u8 {

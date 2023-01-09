@@ -46,7 +46,7 @@ impl Baseline {
     /// Count the number of consecutive nibbles equal to the first nibble from
     /// the start, assuming the first `SKIP` nibbles are equal to the first
     /// nibble.
-    pub(crate) fn count_leading_homogenous_skipping<const SKIP: usize>(&self) -> u8 {
+    pub(crate) fn count_leading_homogeneous_skipping<const SKIP: usize>(&self) -> u8 {
         self.0
             .iter()
             .skip(SKIP)
@@ -103,8 +103,8 @@ impl Nibbles for Baseline {
         self.count_leading_letters_skipping::<0>()
     }
 
-    fn count_leading_homogenous(&self) -> u8 {
-        self.count_leading_homogenous_skipping::<1>()
+    fn count_leading_homogeneous(&self) -> u8 {
+        self.count_leading_homogeneous_skipping::<1>()
     }
 
     fn count_longest_prefix_e(&self) -> u8 {

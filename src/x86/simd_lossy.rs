@@ -242,7 +242,7 @@ impl NibblesBatch<8> for SimdLossy8 {
         }
     }
 
-    fn count_leading_homogenous_batch(x: [[u8; 16]; 8]) -> [u8; 8] {
+    fn count_leading_homogeneous_batch(x: [[u8; 16]; 8]) -> [u8; 8] {
         unsafe { Self::from(x).count_leading_homogenous_simd() }
     }
 

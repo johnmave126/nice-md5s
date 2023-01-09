@@ -61,7 +61,7 @@ impl Display for MD5Pair {
 struct Report {
     digits: MD5Pair,
     letters: MD5Pair,
-    homogenous: MD5Pair,
+    homogeneous: MD5Pair,
     leading_e: MD5Pair,
     leading_pi: MD5Pair,
 }
@@ -71,7 +71,7 @@ impl Report {
         Self {
             digits: Self::get_by(niceties, srcs, digests, |n| n.digits),
             letters: Self::get_by(niceties, srcs, digests, |n| n.letters),
-            homogenous: Self::get_by(niceties, srcs, digests, |n| n.homogenous),
+            homogeneous: Self::get_by(niceties, srcs, digests, |n| n.homogeneous),
             leading_e: Self::get_by(niceties, srcs, digests, |n| n.leading_e),
             leading_pi: Self::get_by(niceties, srcs, digests, |n| n.leading_pi),
         }
@@ -209,9 +209,9 @@ fn main() {
             .with_style(style.clone())
             .with_prefix("letters")
             .with_message("awaiting update...");
-        let homogenous_bar = ProgressBar::new(u64::MAX)
+        let homogeneous_bar = ProgressBar::new(u64::MAX)
             .with_style(style.clone())
-            .with_prefix("homogenous")
+            .with_prefix("homogeneous")
             .with_message("awaiting update...");
         let e_bar = ProgressBar::new(u64::MAX)
             .with_style(style.clone())
@@ -225,7 +225,7 @@ fn main() {
         let multi = MultiProgress::new();
         let digits_bar = multi.add(digits_bar);
         let letters_bar = multi.add(letters_bar);
-        let homogenous_bar = multi.add(homogenous_bar);
+        let homogeneous_bar = multi.add(homogeneous_bar);
         let e_bar = multi.add(e_bar);
         let pi_bar = multi.add(pi_bar);
 
@@ -244,7 +244,7 @@ fn main() {
             summary.set_position(total);
             digits_bar.set_message(report.digits.to_string());
             letters_bar.set_message(report.letters.to_string());
-            homogenous_bar.set_message(report.homogenous.to_string());
+            homogeneous_bar.set_message(report.homogeneous.to_string());
             e_bar.set_message(report.leading_e.to_string());
             pi_bar.set_message(report.leading_pi.to_string());
         }
@@ -269,7 +269,7 @@ fn main() {
         processed += BLOCK as u64;
         master_report.digits = max(master_report.digits, report.digits);
         master_report.letters = max(master_report.letters, report.letters);
-        master_report.homogenous = max(master_report.homogenous, report.homogenous);
+        master_report.homogeneous = max(master_report.homogeneous, report.homogeneous);
         master_report.leading_e = max(master_report.leading_e, report.leading_e);
         master_report.leading_pi = max(master_report.leading_pi, report.leading_pi);
 
