@@ -28,7 +28,7 @@ unsafe fn generate_strs_simd<R: rand::Rng, const N: usize>(rng: &mut R) -> [[u8;
 
     use_intrinsic! {
         _mm256_add_epi8, _mm256_and_si256, _mm256_cmpgt_epi8, _mm256_loadu_si256, _mm256_set1_epi8,
-        _mm256_srli_epi32, _mm256_storeu_si256,
+        _mm256_storeu_si256, _mm256_sub_epi8,
     }
 
     [0; N].map(|_| {
@@ -43,18 +43,16 @@ unsafe fn generate_strs_simd<R: rand::Rng, const N: usize>(rng: &mut R) -> [[u8;
             .as_ptr()
             .cast(),
         );
-        // Keep 5 bits (0-31) in each byte
-        let random_5 = _mm256_and_si256(v, _mm256_set1_epi8(0x1Fu8 as i8));
-        // Get 2 more bits (0-3) from each byte
-        let random_2 = _mm256_srli_epi32(_mm256_and_si256(v, _mm256_set1_epi8(0x60u8 as i8)), 5);
-        // Get 1 more bit (0-1) from each byte
-        let random_1 = _mm256_srli_epi32(_mm256_and_si256(v, _mm256_set1_epi8(0x80u8 as i8)), 7);
-        // Add above 3 to get (0-35)
-        let indices = _mm256_add_epi8(_mm256_add_epi8(random_5, random_2), random_1);
+        // Keep 6 bits (0-63)
+        let v = _mm256_and_si256(v, _mm256_set1_epi8(0x3Fu8 as i8));
+        // Mask bytes in range 36-63
+        let gt_35 = _mm256_cmpgt_epi8(v, _mm256_set1_epi8(35));
+        // Subtract 36 for those bytes
+        let v = _mm256_sub_epi8(v, _mm256_and_si256(_mm256_set1_epi8(36), gt_35));
         // Set each byte to 0xFF if it should be a letter (10-35), otherwise 0x00
-        let alpha_mask = _mm256_cmpgt_epi8(indices, _mm256_set1_epi8(0x09u8 as i8));
+        let alpha_mask = _mm256_cmpgt_epi8(v, _mm256_set1_epi8(0x09u8 as i8));
         // Shift each byte so that range starts at ASCII `0`
-        let to_numbers = _mm256_add_epi8(indices, _mm256_set1_epi8(0x30u8 as i8));
+        let to_numbers = _mm256_add_epi8(v, _mm256_set1_epi8(0x30u8 as i8));
         // Shift bytes that should be a letter by additional 0x27, so that the range
         // starts at ASCII `a`
         let to_alphas = _mm256_and_si256(_mm256_set1_epi8(0x27u8 as i8), alpha_mask);
