@@ -1,5 +1,7 @@
 use std::mem::transmute;
 
+use asm_block::asm_block;
+
 use super::use_intrinsic;
 
 /// Generate 16 [0-9a-z] ASCII byte in SIMD. The distribution is not uniform.
@@ -115,145 +117,171 @@ pub fn digest_md5s<const N: usize>(srcs: [[u8; 32]; N]) -> [[u8; 16]; N] {
     srcs.map(|v| unsafe { digest_md5_asm(v) })
 }
 
-// stringify an operand
-#[cfg_attr(rustfmt, rustfmt_skip)]
-macro_rules! asm_operand {
-    (eax) => { "eax" };
-    (ebx) => { "ebx" };
-    (ecx) => { "ecx" };
-    (edx) => { "edx" };
-    (esi) => { "esi" };
-    (edi) => { "edi" };
-    (ebp) => { "ebp" };
-    ($x: ident) => {
-        concat!("{", stringify!($x), ":e}")
+/// MD5 operators
+macro_rules! asm_md5_op {
+    ($p: ident, $a: tt, $b: tt, $c: tt, $d: tt, 0, $s: literal, $t: literal, $tmp1: tt, $tmp2: tt) => {
+        asm_md5_op!($p, $a, $b, $c, $d, $s, $t, $tmp1, $tmp2)
     };
-    ($x: literal) => {
-        stringify!($x)
+    ($p: ident, $a: tt, $b: tt, $c: tt, $d: tt, $k: tt, $s: literal, $t: literal, $tmp1: tt, $tmp2: tt) => {
+        asm_md5_op!($p, $a, $b, $c, $d, @$k, $s, $t, $tmp1, $tmp2)
     };
-    ([ $first: tt $(+ $rest: tt)* ]) => {
-        concat!("[", asm_operand!($first) $(, "+", asm_operand!($rest))* ,"]")
-    };
-}
-
-// stringify a block of instructions
-#[cfg_attr(rustfmt, rustfmt_skip)]
-macro_rules! asm_block {
-    ($($op: ident $a0: tt $(, $args: tt)*);+ $(;)?) => {
+    (F, $a: tt, $b: tt, $c: tt, $d: tt, $(@$k: tt,)? $s: literal, $t: literal, $tmp1: tt, $tmp2: tt) => {
         concat!(
-            $(
-                stringify!($op), " ",
-                asm_operand!($a0) $(, ", ", asm_operand!($args))*,
-                "\n"
-            ),+
+            asm_block! {
+                mov $tmp1, $c;
+                $(add $a, $k;)?
+                xor $tmp1, $d;
+                and $tmp1, $b;
+                xor $tmp1, $d;
+            },
+            asm_md5_op!(END, $a, $b, $s, $t, $tmp1)
         )
     };
+    (G, $a: tt, $b: tt, $c: tt, $d: tt, $(@$k: tt,)? $s: literal, $t: literal, $tmp1: tt, $tmp2: tt) => {
+        concat!(
+            asm_block! {
+                mov $tmp1, $d;
+                mov $tmp2, $d;
+                $(add $a, $k;)?
+                not $tmp1;
+                and $tmp2, $b;
+                and $tmp1, $c;
+                or $tmp1, $tmp2;
+            },
+            asm_md5_op!(END, $a, $b, $s, $t, $tmp1)
+        )
+    };
+    (H, $a: tt, $b: tt, $c: tt, $d: tt, $(@$k: tt,)? $s: literal, $t: literal, $tmp1: tt, $tmp2: tt) => {
+        concat!(
+            asm_block! {
+                mov $tmp1, $c;
+                $(add $a, $k;)?
+                xor $tmp1, $d;
+                xor $tmp1, $b;
+            },
+            asm_md5_op!(END, $a, $b, $s, $t, $tmp1)
+        )
+    };
+    (I, $a: tt, $b: tt, $c: tt, $d: tt, $(@$k: tt,)? $s: literal, $t: literal, $tmp1: tt, $tmp2: tt) => {
+        concat!(
+            asm_block! {
+                mov $tmp1, $d;
+                not $tmp1;
+                $(add $a, $k;)?
+                or $tmp1, $b;
+                xor $tmp1, $c;
+            },
+            asm_md5_op!(END, $a, $b, $s, $t, $tmp1)
+        )
+    };
+    (END, $a: tt, $b: tt, $s: literal, $t: literal, $tmp: tt) => {
+        asm_block! {
+            lea $a, [$a + $tmp + $t];
+            rol $a, $s;
+            add $a, $b;
+        }
+    }
 }
 
-/// MD5 rounds
-macro_rules! round {
-    (F, $a: ident, $b: ident, $c: ident, $d: ident, $k: tt, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $c;
-            add $a, $k;
-            xor $tmp1, $d;
-            and $tmp1, $b;
-            xor $tmp1, $d;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
+#[rustfmt::skip]
+macro_rules! asm_md5 {
+    (
+        // states
+        $a: tt, $b: tt, $c: tt, $d: tt,
+        // inputs
+        $x0: tt, $x1: tt, $x2: tt, $x3: tt,
+        $x4: tt, $x5: tt, $x6: tt, $x7: tt,
+        $x8: tt, $x9: tt, $xa: tt, $xb: tt,
+        $xc: tt, $xd: tt, $xe: tt, $xf: tt,
+        // clobbers
+        $t1: tt, $t2: tt
+     ) => {
+        concat!(
+            // round 1
+            asm_md5_op!(F, $a, $b, $c, $d, $x0,  7, 0xd76aa478, $t1, $t2),
+            asm_md5_op!(F, $d, $a, $b, $c, $x1, 12, 0xe8c7b756, $t1, $t2),
+            asm_md5_op!(F, $c, $d, $a, $b, $x2, 17, 0x242070db, $t1, $t2),
+            asm_md5_op!(F, $b, $c, $d, $a, $x3, 22, 0xc1bdceee, $t1, $t2),
+   
+            asm_md5_op!(F, $a, $b, $c, $d, $x4,  7, 0xf57c0faf, $t1, $t2),
+            asm_md5_op!(F, $d, $a, $b, $c, $x5, 12, 0x4787c62a, $t1, $t2),
+            asm_md5_op!(F, $c, $d, $a, $b, $x6, 17, 0xa8304613, $t1, $t2),
+            asm_md5_op!(F, $b, $c, $d, $a, $x7, 22, 0xfd469501, $t1, $t2),
+ 
+            asm_md5_op!(F, $a, $b, $c, $d, $x8,  7, 0x698098d8, $t1, $t2),
+            asm_md5_op!(F, $d, $a, $b, $c, $x9, 12, 0x8b44f7af, $t1, $t2),
+            asm_md5_op!(F, $c, $d, $a, $b, $xa, 17, 0xffff5bb1, $t1, $t2),
+            asm_md5_op!(F, $b, $c, $d, $a, $xb, 22, 0x895cd7be, $t1, $t2),
+ 
+            asm_md5_op!(F, $a, $b, $c, $d, $xc,  7, 0x6b901122, $t1, $t2),
+            asm_md5_op!(F, $d, $a, $b, $c, $xd, 12, 0xfd987193, $t1, $t2),
+            asm_md5_op!(F, $c, $d, $a, $b, $xe, 17, 0xa679438e, $t1, $t2),
+            asm_md5_op!(F, $b, $c, $d, $a, $xf, 22, 0x49b40821, $t1, $t2),
+
+            // round 2
+            asm_md5_op!(G, $a, $b, $c, $d, $x1,  5, 0xf61e2562, $t1, $t2),
+            asm_md5_op!(G, $d, $a, $b, $c, $x6,  9, 0xc040b340, $t1, $t2),
+            asm_md5_op!(G, $c, $d, $a, $b, $xb, 14, 0x265e5a51, $t1, $t2),
+            asm_md5_op!(G, $b, $c, $d, $a, $x0, 20, 0xe9b6c7aa, $t1, $t2),
+
+            asm_md5_op!(G, $a, $b, $c, $d, $x5,  5, 0xd62f105d, $t1, $t2),
+            asm_md5_op!(G, $d, $a, $b, $c, $xa,  9, 0x02441453, $t1, $t2),
+            asm_md5_op!(G, $c, $d, $a, $b, $xf, 14, 0xd8a1e681, $t1, $t2),
+            asm_md5_op!(G, $b, $c, $d, $a, $x4, 20, 0xe7d3fbc8, $t1, $t2),
+
+            asm_md5_op!(G, $a, $b, $c, $d, $x9,  5, 0x21e1cde6, $t1, $t2),
+            asm_md5_op!(G, $d, $a, $b, $c, $xe,  9, 0xc33707d6, $t1, $t2),
+            asm_md5_op!(G, $c, $d, $a, $b, $x3, 14, 0xf4d50d87, $t1, $t2),
+            asm_md5_op!(G, $b, $c, $d, $a, $x8, 20, 0x455a14ed, $t1, $t2),
+
+            asm_md5_op!(G, $a, $b, $c, $d, $xd,  5, 0xa9e3e905, $t1, $t2),
+            asm_md5_op!(G, $d, $a, $b, $c, $x2,  9, 0xfcefa3f8, $t1, $t2),
+            asm_md5_op!(G, $c, $d, $a, $b, $x7, 14, 0x676f02d9, $t1, $t2),
+            asm_md5_op!(G, $b, $c, $d, $a, $xc, 20, 0x8d2a4c8a, $t1, $t2),
+
+            // round 3
+            asm_md5_op!(H, $a, $b, $c, $d, $x5,  4, 0xfffa3942, $t1, $t2),
+            asm_md5_op!(H, $d, $a, $b, $c, $x8, 11, 0x8771f681, $t1, $t2),
+            asm_md5_op!(H, $c, $d, $a, $b, $xb, 16, 0x6d9d6122, $t1, $t2),
+            asm_md5_op!(H, $b, $c, $d, $a, $xe, 23, 0xfde5380c, $t1, $t2),
+
+            asm_md5_op!(H, $a, $b, $c, $d, $x1,  4, 0xa4beea44, $t1, $t2),
+            asm_md5_op!(H, $d, $a, $b, $c, $x4, 11, 0x4bdecfa9, $t1, $t2),
+            asm_md5_op!(H, $c, $d, $a, $b, $x7, 16, 0xf6bb4b60, $t1, $t2),
+            asm_md5_op!(H, $b, $c, $d, $a, $xa, 23, 0xbebfbc70, $t1, $t2),
+
+            asm_md5_op!(H, $a, $b, $c, $d, $xd,  4, 0x289b7ec6, $t1, $t2),
+            asm_md5_op!(H, $d, $a, $b, $c, $x0, 11, 0xeaa127fa, $t1, $t2),
+            asm_md5_op!(H, $c, $d, $a, $b, $x3, 16, 0xd4ef3085, $t1, $t2),
+            asm_md5_op!(H, $b, $c, $d, $a, $x6, 23, 0x04881d05, $t1, $t2),
+
+            asm_md5_op!(H, $a, $b, $c, $d, $x9,  4, 0xd9d4d039, $t1, $t2),
+            asm_md5_op!(H, $d, $a, $b, $c, $xc, 11, 0xe6db99e5, $t1, $t2),
+            asm_md5_op!(H, $c, $d, $a, $b, $xf, 16, 0x1fa27cf8, $t1, $t2),
+            asm_md5_op!(H, $b, $c, $d, $a, $x2, 23, 0xc4ac5665, $t1, $t2),
+
+            // round 4
+            asm_md5_op!(I, $a, $b, $c, $d, $x0,  6, 0xf4292244, $t1, $t2),
+            asm_md5_op!(I, $d, $a, $b, $c, $x7, 10, 0x432aff97, $t1, $t2),
+            asm_md5_op!(I, $c, $d, $a, $b, $xe, 15, 0xab9423a7, $t1, $t2),
+            asm_md5_op!(I, $b, $c, $d, $a, $x5, 21, 0xfc93a039, $t1, $t2),
+
+            asm_md5_op!(I, $a, $b, $c, $d, $xc,  6, 0x655b59c3, $t1, $t2),
+            asm_md5_op!(I, $d, $a, $b, $c, $x3, 10, 0x8f0ccc92, $t1, $t2),
+            asm_md5_op!(I, $c, $d, $a, $b, $xa, 15, 0xffeff47d, $t1, $t2),
+            asm_md5_op!(I, $b, $c, $d, $a, $x1, 21, 0x85845dd1, $t1, $t2),
+
+            asm_md5_op!(I, $a, $b, $c, $d, $x8,  6, 0x6fa87e4f, $t1, $t2),
+            asm_md5_op!(I, $d, $a, $b, $c, $xf, 10, 0xfe2ce6e0, $t1, $t2),
+            asm_md5_op!(I, $c, $d, $a, $b, $x6, 15, 0xa3014314, $t1, $t2),
+            asm_md5_op!(I, $b, $c, $d, $a, $xd, 21, 0x4e0811a1, $t1, $t2),
+
+            asm_md5_op!(I, $a, $b, $c, $d, $x4,  6, 0xf7537e82, $t1, $t2),
+            asm_md5_op!(I, $d, $a, $b, $c, $xb, 10, 0xbd3af235, $t1, $t2),
+            asm_md5_op!(I, $c, $d, $a, $b, $x2, 15, 0x2ad7d2bb, $t1, $t2),
+            asm_md5_op!(I, $b, $c, $d, $a, $x9, 21, 0xeb86d391, $t1, $t2),
         )
-    };
-    // Since we only supply 128 bits, there will be a lot 0-paddings, so we omit `add`
-    // in those cases.
-    (F, $a: ident, $b: ident, $c: ident, $d: ident, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $c;
-            xor $tmp1, $d;
-            and $tmp1, $b;
-            xor $tmp1, $d;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
-    (G, $a: ident, $b: ident, $c: ident, $d: ident, $k: tt, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $d;
-            mov $tmp2, $d;
-            add $a, $k;
-            not $tmp1;
-            and $tmp2, $b;
-            and $tmp1, $c;
-            or $tmp1, $tmp2;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
-    // Since we only supply 128 bits, there will be a lot 0-paddings, so we omit `add`
-    // in those cases.
-    (G, $a: ident, $b: ident, $c: ident, $d: ident, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $d;
-            mov $tmp2, $d;
-            not $tmp1;
-            and $tmp2, $b;
-            and $tmp1, $c;
-            or $tmp1, $tmp2;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
-    (H, $a: ident, $b: ident, $c: ident, $d: ident, $k: tt, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $c;
-            add $a, $k;
-            xor $tmp1, $d;
-            xor $tmp1, $b;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
-    // Since we only supply 128 bits, there will be a lot 0-paddings, so we omit `add`
-    // in those cases.
-    (H, $a: ident, $b: ident, $c: ident, $d: ident, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $c;
-            xor $tmp1, $d;
-            xor $tmp1, $b;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
-    (I, $a: ident, $b: ident, $c: ident, $d: ident, $k: tt, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $d;
-            not $tmp1;
-            add $a, $k;
-            or $tmp1, $b;
-            xor $tmp1, $c;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
-    // Since we only supply 128 bits, there will be a lot 0-paddings, so we omit `add`
-    // in those cases.
-    (I, $a: ident, $b: ident, $c: ident, $d: ident, $s: literal, $t: literal, $tmp1: ident, $tmp2: ident) => {
-        asm_block!(
-            mov $tmp1, $d;
-            not $tmp1;
-            or $tmp1, $b;
-            xor $tmp1, $c;
-            lea $a, [$a + $tmp1 + $t];
-            rol $a, $s;
-            add $a, $b;
-        )
-    };
+    }
 }
 
 /// x86_64 implementation of MD5 digest.
@@ -280,85 +308,16 @@ unsafe fn digest_md5_asm(x: [u8; 32]) -> [u8; 16] {
     // x[15] = 0
     // Since 256 = 0x0000_0000_0000_0100
     asm!(
-        round!(F, a, b, c, d, x0, 7, 0xd76aa478, t1, t2),
-        round!(F, d, a, b, c, x1, 12, 0xe8c7b756, t1, t2),
-        round!(F, c, d, a, b, x2, 17, 0x242070db, t1, t2),
-        round!(F, b, c, d, a, x3, 22, 0xc1bdceee, t1, t2),
-
-        round!(F, a, b, c, d, x4, 7, 0xf57c0faf, t1, t2),
-        round!(F, d, a, b, c, x5, 12, 0x4787c62a, t1, t2),
-        round!(F, c, d, a, b, x6, 17, 0xa8304613, t1, t2),
-        round!(F, b, c, d, a, x7, 22, 0xfd469501, t1, t2),
-
-        round!(F, a, b, c, d, 0x80, 7, 0x698098d8, t1, t2),
-        round!(F, d, a, b, c, 12, 0x8b44f7af, t1, t2),
-        round!(F, c, d, a, b, 17, 0xffff5bb1, t1, t2),
-        round!(F, b, c, d, a, 22, 0x895cd7be, t1, t2),
-
-        round!(F, a, b, c, d, 7, 0x6b901122, t1, t2),
-        round!(F, d, a, b, c, 12, 0xfd987193, t1, t2),
-        round!(F, c, d, a, b, 0x100, 17, 0xa679438e, t1, t2),
-        round!(F, b, c, d, a, 22, 0x49b40821, t1, t2),
-
-        round!(G, a, b, c, d, x1, 5, 0xf61e2562, t1, t2),
-        round!(G, d, a, b, c, x6, 9, 0xc040b340, t1, t2),
-        round!(G, c, d, a, b, 14, 0x265e5a51, t1, t2),
-        round!(G, b, c, d, a, x0, 20, 0xe9b6c7aa, t1, t2),
-
-        round!(G, a, b, c, d, x5, 5, 0xd62f105d, t1, t2),
-        round!(G, d, a, b, c, 9, 0x02441453, t1, t2),
-        round!(G, c, d, a, b, 14, 0xd8a1e681, t1, t2),
-        round!(G, b, c, d, a, x4, 20, 0xe7d3fbc8, t1, t2),
-
-        round!(G, a, b, c, d, 5, 0x21e1cde6, t1, t2),
-        round!(G, d, a, b, c, 0x100, 9, 0xc33707d6, t1, t2),
-        round!(G, c, d, a, b, x3, 14, 0xf4d50d87, t1, t2),
-        round!(G, b, c, d, a, 0x80, 20, 0x455a14ed, t1, t2),
-
-        round!(G, a, b, c, d, 5, 0xa9e3e905, t1, t2),
-        round!(G, d, a, b, c, x2, 9, 0xfcefa3f8, t1, t2),
-        round!(G, c, d, a, b, x7, 14, 0x676f02d9, t1, t2),
-        round!(G, b, c, d, a, 20, 0x8d2a4c8a, t1, t2),
-
-        round!(H, a, b, c, d, x5, 4, 0xfffa3942, t1, t2),
-        round!(H, d, a, b, c, 0x80, 11, 0x8771f681, t1, t2),
-        round!(H, c, d, a, b, 16, 0x6d9d6122, t1, t2),
-        round!(H, b, c, d, a, 0x100, 23, 0xfde5380c, t1, t2),
-
-        round!(H, a, b, c, d, x1, 4, 0xa4beea44, t1, t2),
-        round!(H, d, a, b, c, x4, 11, 0x4bdecfa9, t1, t2),
-        round!(H, c, d, a, b, x7, 16, 0xf6bb4b60, t1, t2),
-        round!(H, b, c, d, a, 23, 0xbebfbc70, t1, t2),
-
-        round!(H, a, b, c, d, 4, 0x289b7ec6, t1, t2),
-        round!(H, d, a, b, c, x0, 11, 0xeaa127fa, t1, t2),
-        round!(H, c, d, a, b, x3, 16, 0xd4ef3085, t1, t2),
-        round!(H, b, c, d, a, x6, 23, 0x04881d05, t1, t2),
-
-        round!(H, a, b, c, d, 4, 0xd9d4d039, t1, t2),
-        round!(H, d, a, b, c, 11, 0xe6db99e5, t1, t2),
-        round!(H, c, d, a, b, 16, 0x1fa27cf8, t1, t2),
-        round!(H, b, c, d, a, x2, 23, 0xc4ac5665, t1, t2),
-
-        round!(I, a, b, c, d, x0, 6, 0xf4292244, t1, t2),
-        round!(I, d, a, b, c, x7, 10, 0x432aff97, t1, t2),
-        round!(I, c, d, a, b, 0x100, 15, 0xab9423a7, t1, t2),
-        round!(I, b, c, d, a, x5, 21, 0xfc93a039, t1, t2),
-
-        round!(I, a, b, c, d, 6, 0x655b59c3, t1, t2),
-        round!(I, d, a, b, c, x3, 10, 0x8f0ccc92, t1, t2),
-        round!(I, c, d, a, b, 15, 0xffeff47d, t1, t2),
-        round!(I, b, c, d, a, x1, 21, 0x85845dd1, t1, t2),
-
-        round!(I, a, b, c, d, 0x80, 6, 0x6fa87e4f, t1, t2),
-        round!(I, d, a, b, c, 10, 0xfe2ce6e0, t1, t2),
-        round!(I, c, d, a, b, x6, 15, 0xa3014314, t1, t2),
-        round!(I, b, c, d, a, 21, 0x4e0811a1, t1, t2),
-
-        round!(I, a, b, c, d, x4, 6, 0xf7537e82, t1, t2),
-        round!(I, d, a, b, c, 10, 0xbd3af235, t1, t2),
-        round!(I, c, d, a, b, x2, 15, 0x2ad7d2bb, t1, t2),
-        round!(I, b, c, d, a, 21, 0xeb86d391, t1, t2),
+        asm_md5!(
+            // states
+            {a:e}, {b:e}, {c:e}, {d:e},
+            // inputs
+            {x0:e}, {x1:e}, {x2:e}, {x3:e},
+            {x4:e}, {x5:e}, {x6:e}, {x7:e},
+              0x80,      0,      0,      0,
+                 0,      0,  0x100,      0,
+            {t1:e}, {t2:e}
+        ),
 
         a = inout(reg) state[0],
         b = inout(reg) state[1],
@@ -420,85 +379,16 @@ unsafe fn digest_md5_asm(x: [u8; 32]) -> [u8; 16] {
         // Move out x
         "mov ebp, edi",
 
-        round!(F, eax, ebx, ecx, edx, [ebp + 0], 7, 0xd76aa478, esi, edi),
-        round!(F, edx, eax, ebx, ecx, [ebp + 4], 12, 0xe8c7b756, esi, edi),
-        round!(F, ecx, edx, eax, ebx, [ebp + 8], 17, 0x242070db, esi, edi),
-        round!(F, ebx, ecx, edx, eax, [ebp + 12], 22, 0xc1bdceee, esi, edi),
-
-        round!(F, eax, ebx, ecx, edx, [ebp + 16], 7, 0xf57c0faf, esi, edi),
-        round!(F, edx, eax, ebx, ecx, [ebp + 20], 12, 0x4787c62a, esi, edi),
-        round!(F, ecx, edx, eax, ebx, [ebp + 24], 17, 0xa8304613, esi, edi),
-        round!(F, ebx, ecx, edx, eax, [ebp + 28], 22, 0xfd469501, esi, edi),
-
-        round!(F, eax, ebx, ecx, edx, 0x80, 7, 0x698098d8, esi, edi),
-        round!(F, edx, eax, ebx, ecx, 12, 0x8b44f7af, esi, edi),
-        round!(F, ecx, edx, eax, ebx, 17, 0xffff5bb1, esi, edi),
-        round!(F, ebx, ecx, edx, eax, 22, 0x895cd7be, esi, edi),
-
-        round!(F, eax, ebx, ecx, edx, 7, 0x6b901122, esi, edi),
-        round!(F, edx, eax, ebx, ecx, 12, 0xfd987193, esi, edi),
-        round!(F, ecx, edx, eax, ebx, 0x100, 17, 0xa679438e, esi, edi),
-        round!(F, ebx, ecx, edx, eax, 22, 0x49b40821, esi, edi),
-
-        round!(G, eax, ebx, ecx, edx, [ebp + 4], 5, 0xf61e2562, esi, edi),
-        round!(G, edx, eax, ebx, ecx, [ebp + 24], 9, 0xc040b340, esi, edi),
-        round!(G, ecx, edx, eax, ebx, 14, 0x265e5a51, esi, edi),
-        round!(G, ebx, ecx, edx, eax, [ebp + 0], 20, 0xe9b6c7aa, esi, edi),
-
-        round!(G, eax, ebx, ecx, edx, [ebp + 20], 5, 0xd62f105d, esi, edi),
-        round!(G, edx, eax, ebx, ecx, 9, 0x02441453, esi, edi),
-        round!(G, ecx, edx, eax, ebx, 14, 0xd8a1e681, esi, edi),
-        round!(G, ebx, ecx, edx, eax, [ebp + 16], 20, 0xe7d3fbc8, esi, edi),
-
-        round!(G, eax, ebx, ecx, edx, 5, 0x21e1cde6, esi, edi),
-        round!(G, edx, eax, ebx, ecx, 0x100, 9, 0xc33707d6, esi, edi),
-        round!(G, ecx, edx, eax, ebx, [ebp + 12], 14, 0xf4d50d87, esi, edi),
-        round!(G, ebx, ecx, edx, eax, 0x80, 20, 0x455a14ed, esi, edi),
-
-        round!(G, eax, ebx, ecx, edx, 5, 0xa9e3e905, esi, edi),
-        round!(G, edx, eax, ebx, ecx, [ebp + 8], 9, 0xfcefa3f8, esi, edi),
-        round!(G, ecx, edx, eax, ebx, [ebp + 28], 14, 0x676f02d9, esi, edi),
-        round!(G, ebx, ecx, edx, eax, 20, 0x8d2a4c8a, esi, edi),
-
-        round!(H, eax, ebx, ecx, edx, [ebp + 20], 4, 0xfffa3942, esi, edi),
-        round!(H, edx, eax, ebx, ecx, 0x80, 11, 0x8771f681, esi, edi),
-        round!(H, ecx, edx, eax, ebx, 16, 0x6d9d6122, esi, edi),
-        round!(H, ebx, ecx, edx, eax, 0x100, 23, 0xfde5380c, esi, edi),
-
-        round!(H, eax, ebx, ecx, edx, [ebp + 4], 4, 0xa4beea44, esi, edi),
-        round!(H, edx, eax, ebx, ecx, [ebp + 16], 11, 0x4bdecfa9, esi, edi),
-        round!(H, ecx, edx, eax, ebx, [ebp + 28], 16, 0xf6bb4b60, esi, edi),
-        round!(H, ebx, ecx, edx, eax, 23, 0xbebfbc70, esi, edi),
-
-        round!(H, eax, ebx, ecx, edx, 4, 0x289b7ec6, esi, edi),
-        round!(H, edx, eax, ebx, ecx, [ebp + 0], 11, 0xeaa127fa, esi, edi),
-        round!(H, ecx, edx, eax, ebx, [ebp + 12], 16, 0xd4ef3085, esi, edi),
-        round!(H, ebx, ecx, edx, eax, [ebp + 24], 23, 0x04881d05, esi, edi),
-
-        round!(H, eax, ebx, ecx, edx, 4, 0xd9d4d039, esi, edi),
-        round!(H, edx, eax, ebx, ecx, 11, 0xe6db99e5, esi, edi),
-        round!(H, ecx, edx, eax, ebx, 16, 0x1fa27cf8, esi, edi),
-        round!(H, ebx, ecx, edx, eax, [ebp + 8], 23, 0xc4ac5665, esi, edi),
-
-        round!(I, eax, ebx, ecx, edx, [ebp + 0], 6, 0xf4292244, esi, edi),
-        round!(I, edx, eax, ebx, ecx, [ebp + 28], 10, 0x432aff97, esi, edi),
-        round!(I, ecx, edx, eax, ebx, 0x100, 15, 0xab9423a7, esi, edi),
-        round!(I, ebx, ecx, edx, eax, [ebp + 20], 21, 0xfc93a039, esi, edi),
-
-        round!(I, eax, ebx, ecx, edx, 6, 0x655b59c3, esi, edi),
-        round!(I, edx, eax, ebx, ecx, [ebp + 12], 10, 0x8f0ccc92, esi, edi),
-        round!(I, ecx, edx, eax, ebx, 15, 0xffeff47d, esi, edi),
-        round!(I, ebx, ecx, edx, eax, [ebp + 4], 21, 0x85845dd1, esi, edi),
-
-        round!(I, eax, ebx, ecx, edx, 0x80, 6, 0x6fa87e4f, esi, edi),
-        round!(I, edx, eax, ebx, ecx, 10, 0xfe2ce6e0, esi, edi),
-        round!(I, ecx, edx, eax, ebx, [ebp + 24], 15, 0xa3014314, esi, edi),
-        round!(I, ebx, ecx, edx, eax, 21, 0x4e0811a1, esi, edi),
-
-        round!(I, eax, ebx, ecx, edx, [ebp + 16], 6, 0xf7537e82, esi, edi),
-        round!(I, edx, eax, ebx, ecx, 10, 0xbd3af235, esi, edi),
-        round!(I, ecx, edx, eax, ebx, [ebp + 8], 15, 0x2ad7d2bb, esi, edi),
-        round!(I, ebx, ecx, edx, eax, 21, 0xeb86d391, esi, edi),
+        asm_md5!(
+            // states
+            eax, ebx, ecx, edx,
+            // inputs
+             [ebp + 0],  [ebp + 4],  [ebp + 8], [ebp + 12],
+            [ebp + 16], [ebp + 20], [ebp + 24], [ebp + 28],
+                  0x80,          0,          0,          0,
+                     0,          0,      0x100,          0,
+            esi, edi
+        ),
 
         // Restore esi
         "mov esi, [esp]",

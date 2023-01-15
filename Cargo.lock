@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
+name = "asm_block"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2383e87e694c327106bef755459f0437be0d73de8ca5177176d5a3b7c8931af1"
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -474,6 +480,7 @@ dependencies = [
 name = "nice-md5s"
 version = "0.1.0"
 dependencies = [
+ "asm_block",
  "clap 4.0.32",
  "criterion",
  "hex",
